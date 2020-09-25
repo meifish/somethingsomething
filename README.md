@@ -8,7 +8,7 @@ Download and unzip all videos to `/something_videos` under the root directory of
 
 ### Download Bounding box annotation JSON
 https://drive.google.com/drive/folders/1XqZC2jIHqrLPugPOVJxCH_YWa275PBrZ
-Download 4 JSONs files from the google drive, and put them under `bounding_box_annotations` folder (The folder does not come with this repo, create them by yourself.)
+Download 4 JSONs files from the google drive, and put them under `/bounding_box_annotations` folder (The folder does not come with this repo, create them by yourself.)
 
 ### Extract frames with 12 FPS from the videos
 The original experiments did not provide the code to extract frames. 
