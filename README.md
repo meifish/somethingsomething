@@ -19,5 +19,6 @@ Download 4 JSONs files from the google drive, and put them under `/bounding_box_
 The original experiments did not provide the code to extract frames. 
 I created fps.extraction.py to extract frame, and examine the original .webm has fps 12 by cv2 examination. 
 However the frame number does not match theirs. (The frame number doesn't match their annotations.)
-Am trying another method in this repo:
+
+Am trying ffmpeg method in the following repo. The repo is Facebook research work using the same `something something` dataset.
 https://github.com/facebookresearch/SlowFast/blob/master/slowfast/datasets/DATASET.md#something-something-v2
