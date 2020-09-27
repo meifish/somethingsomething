@@ -15,10 +15,4 @@ Download 4 JSONs files from the google drive, and put them under `/bounding_box_
 2. Run `batch_fps_conversion.sh` script to extract all videos (under `/something_videos`) into frames extracted by fps 12 (frame per second rate).
 3. See the result in `/something_videos_frames`. Every video frames are extracted into the folder, named after each video's basename.
 
-**[old]Log 2020-09-24**
-The original experiments did not provide the code to extract frames. 
-I created fps.extraction.py to extract frame, and examine the original .webm has fps 12 by cv2 examination. 
-However the frame number does not match theirs. (The frame number doesn't match their annotations.)
 
-Am trying ffmpeg method in the following repo. The repo is Facebook research work using the same `something something` dataset.
-https://github.com/facebookresearch/SlowFast/blob/master/slowfast/datasets/DATASET.md#something-something-v2
