@@ -12,7 +12,7 @@ Download 4 JSONs files from the google drive, and put them under `/bounding_box_
 
 ### Extract frames with 12 FPS from the videos
 1. Install `ffmpeg` by running `sudo apt-get install ffmpeg` in terminal  (resource: https://trac.ffmpeg.org/wiki/CompilationGuide/Ubuntu)
-2. Run `batch_fps_conversion.sh` script to extract all videos (under `/something_videos`) into frames extracted by fps (frame per second rate) = 12.
+2. Run `batch_fps_conversion.sh` script to extract all videos (under `/something_videos`) into frames extracted by fps 12 (frame per second rate).
 3. See the result in `/something_videos_frames`. Every video frames will be extracted into the folder, named after each video basename.
 
 --[old]Log 2020-09-24--
