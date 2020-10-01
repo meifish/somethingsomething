@@ -1,4 +1,6 @@
 something_videos/
+something_videos_frames/
 not_used/
-*.json
+bounding_box_annotations/
 *.jpg
+*.webm
