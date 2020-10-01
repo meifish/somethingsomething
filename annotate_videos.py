@@ -61,10 +61,9 @@ if __name__ == '__main__':
 
     with open(args.annot_path, 'r') as f:
         annotations = json.load(f)
-        pprint.pprint(annotations['2'])
 
-    #os.makedirs(args.out_vid_path, exist_ok=True)
+    os.makedirs(args.out_vid_path, exist_ok=True)
 
-    #video_paths = glob.glob(args.vid_path + '/*')
-    #for video_path in video_paths:
-    #    annotate_video(video_path, annotations, args)
+    video_paths = glob.glob(args.vid_path + '/*')
+    for video_path in video_paths:
+        annotate_video(video_path, annotations, args)
