@@ -8,6 +8,8 @@ from data_utils import gtransforms
 from data_utils.data_parser import WebmDataset
 from numpy.random import choice as ch
 import json
+import torchvision.transforms.functional as F
+import torchvision
 
 
 class VideoFolder(torch.utils.data.Dataset):
@@ -20,6 +22,7 @@ class VideoFolder(torch.utils.data.Dataset):
                  file_input,
                  file_labels,
                  frames_duration,
+                 video_root,
                  args=None,
                  multi_crop_test=False,
                  sample_rate=2,
@@ -46,7 +49,7 @@ class VideoFolder(torch.utils.data.Dataset):
         self.if_augment = if_augment
         self.is_val = is_val
         self.data_root = root
-        self.dataset_object = WebmDataset(file_input, file_labels, root, is_test=is_test)
+        self.dataset_object = WebmDataset(file_input, file_labels, root, video_root, is_test=is_test)
         self.json_data = self.dataset_object.json_data
         self.classes = self.dataset_object.classes
         self.classes_dict = self.dataset_object.classes_dict
@@ -81,7 +84,7 @@ class VideoFolder(torch.utils.data.Dataset):
                 # gtransforms.GroupCenterCrop(256),
             ]
         self.transforms += [
-            gtransforms.ToTensor(),
+            gtransforms.ToTensor(),  # return [0,255] instead of [0, 1]
             gtransforms.GroupNormalize(self.img_mean, self.img_std),
         ]
         self.transforms = Compose(self.transforms)
@@ -98,6 +101,7 @@ class VideoFolder(torch.utils.data.Dataset):
         else:
             self.random_crop = None
 
+
     def prepare_data(self):
         """
         This function creates 3 lists: vid_names, labels and frame_cnts
@@ -105,14 +109,14 @@ class VideoFolder(torch.utils.data.Dataset):
         """
         print("Loading label strings")
         self.label_strs = ['_'.join(class_name.split(' ')) for class_name in self.classes]
-        vid_names = []
-        frame_cnts = []
-        labels = []
+        vid_names = []   # video ids
+        frame_cnts = []  # len_of_frames_in_each_video_frame_folder
+        labels = []      # video labels
         for listdata in self.json_data:
             try:
                 vid_names.append(listdata.id)
                 labels.append(listdata.label)
-                frames_path = join(os.path.dirname(self.data_root), "frames/{list_id}".format(list_id=listdata.id))
+                frames_path = join(os.path.dirname(self.data_root), "frames", "{list_id}".format(list_id=listdata.id))
                 frames = os.listdir(frames_path)
                 frame_cnts.append(int(len(frames)))
             except Exception as e:
@@ -162,14 +166,19 @@ class VideoFolder(torch.utils.data.Dataset):
         """
         n_frame = self.frame_cnts[index] - 1
         d = self.in_duration * self.sample_rate # 16 * 2
+        #------------------ Sample frames from the whole video ---------------------#
+        # frame_list is uniformly sampled: it is used by apperance model
+        #--------- Does have sufficient frames to sample from ----------#
         if n_frame > d:
-            if not self.is_val:
+            if not self.is_val: # train
                 # random sample
                 offset = np.random.randint(0, n_frame - d)
-            else:
+            else: # val
                 # center crop
                 offset = (n_frame - d) // 2
             frame_list = list(range(offset, offset + d, self.sample_rate))
+        
+        #--------- Does NOT have sufficient frames to sample from ----------#
         else:
             # Temporal Augmentation
             if not self.is_val: # train
@@ -178,11 +187,16 @@ class VideoFolder(torch.utils.data.Dataset):
                     pos = np.linspace(0, n_frame - 2, self.in_duration)
                 else: # take one
                     pos = np.sort(np.random.choice(list(range(n_frame - 2)), self.in_duration, replace=False))
-            else:
+            else: # val
                 pos = np.linspace(0, n_frame - 2, self.in_duration)
             frame_list = [round(p) for p in pos]
 
         frame_list = [int(x) for x in frame_list]
+
+        #--------------coord_frame_list-------------------#
+        # coord_frame_list is for STIN model (Non-apperance): object based.
+        # len of coord_frame_list is half the size of frame_list
+
 
         if not self.is_val:  # train
             coord_frame_list = self._sample_indices(n_frame)
@@ -190,6 +204,9 @@ class VideoFolder(torch.utils.data.Dataset):
             coord_frame_list = self._get_val_indices(n_frame)
 
         assert len(coord_frame_list) == len(frame_list) // 2
+
+        #----------------------- Get box data ------------------------------#
+        # Only STIN model needs the boxes information (coord_frame_list)
 
         folder_id = str(int(self.vid_names[index]))
         video_data = self.box_annotations[folder_id]
@@ -212,35 +229,42 @@ class VideoFolder(torch.utils.data.Dataset):
         frames = []
         for fidx in coord_frame_list:
             frames.append(self.load_frame(self.vid_names[index], fidx))
-            break  # only one image
+            #break  # only one image
+        
         height, width = frames[0].height, frames[0].width
 
+        # this line was added by me
         frames = [img.resize((self.pre_resize_shape[1], self.pre_resize_shape[0]), Image.BILINEAR) for img in frames]
-
+        #--------------------------CROP-------------------------------------------#
         if self.random_crop is not None:
             frames, (offset_h, offset_w, crop_h, crop_w) = self.random_crop(frames)
         else:
             offset_h, offset_w, (crop_h, crop_w) = 0, 0, self.pre_resize_shape
-
-        if self.model not in  ['coord', 'coord_latent', 'coord_latent_nl', 'coord_latent_concat']:
+        #----------Build new frames for apperance model (frame_list)--------------#
+        # Apperance model does not use crop and resized image
+        if self.model not in  ['coord', 'coordAdd', 'coord_latent', 'coord_latent_nl', 'coord_latent_concat']:
             frames = []
             for fidx in frame_list:
                 frames.append(self.load_frame(self.vid_names[index], fidx))
-        else:
+            
+        else: # STIN model (Objects model)
             # Now for accelerating just pretend we have had frames
-            frames = frames * self.in_duration
+            #frames = frames * self.in_duration
+            pass
+
 
         scale_resize_w, scale_resize_h = self.pre_resize_shape[1] / float(width), self.pre_resize_shape[0] / float(height)
         scale_crop_w, scale_crop_h = 224 / float(crop_w), 224 / float(crop_h)
 
         box_tensors = torch.zeros((self.coord_nr_frames, self.num_boxes, 4), dtype=torch.float32)  # (cx, cy, w, h)
-        box_categories = torch.zeros((self.coord_nr_frames, self.num_boxes))
+
+        box_categories = torch.zeros((self.coord_nr_frames, self.num_boxes)) 
         for frame_index, frame_id in enumerate(coord_frame_list):
             try:
                 frame_data = video_data[frame_id]
             except:
                 frame_data = {'labels': []}
-            for box_data in frame_data['labels']:
+            for box, box_data in enumerate(frame_data['labels']):
                 standard_category = box_data['standard_category']
                 global_box_id = object_set.index(standard_category)
 
@@ -259,6 +283,7 @@ class VideoFolder(torch.utils.data.Dataset):
                 y0, y1 = np.clip([y0, y1], a_min=0, a_max=crop_h-1)
 
                 # scaling due to crop
+                # ---- this seems to make the result 224 (each box would be 224x224)
                 x0, x1 = x0 * scale_crop_w, x1 * scale_crop_w
                 y0, y1 = y0 * scale_crop_h, y1 * scale_crop_h
 
@@ -272,24 +297,42 @@ class VideoFolder(torch.utils.data.Dataset):
                 # normalize gt_box into [0, 1]
                 gt_box /= 224
 
+
                 # load box into tensor
                 try:
                     box_tensors[frame_index, global_box_id] = torch.tensor(gt_box).float()
                 except:
                     pass
                 # load box category
+                
                 box_categories[frame_index, global_box_id] = 1 if box_data['standard_category'] == 'hand' else 2  # 0 is for none
-
+                
                 # load image into tensor
                 x0, y0, x1, y1 = list(map(int, [x0, y0, x1, y1]))
-        return frames, box_tensors, box_categories
+
+ 
+        return self.vid_names[index], frames, box_tensors, box_categories # vid_names, frames were not there
 
 
     def __getitem__(self, index):
-        frames, box_tensors, box_categories = self.sample_single(index)
-        frames = self.transforms(frames)
-        global_img_tensors = frames.permute(1, 0, 2, 3)
-        return global_img_tensors, box_tensors, box_categories, self.classes_dict[self.labels[index]]
+        vid_name, frames, box_tensors, box_categories = self.sample_single(index)
+        
+        global_img_tensors = self.transforms(frames) # [N, 3, H, W]
+        global_img_tensors = global_img_tensors.permute(1, 0, 2, 3) # [3, N, H, W]
+
+        ##############################################################################
+        # Convert the frames to tensors, so we can display on tensorboard
+        worker = torchvision.transforms.Resize((224, 224), Image.BILINEAR)
+        frames = [worker(img) for img in frames]
+
+        worker = lambda x: F.to_tensor(x) * 255
+        img_group = [worker(img) for img in frames]
+        frames = torch.stack(img_group, 0)
+        ##############################################################################
+
+        return vid_name, frames, global_img_tensors, box_tensors, box_categories, self.classes_dict[self.labels[index]]
+
+
 
     def __len__(self):
         return len(self.json_data)
@@ -314,4 +357,3 @@ class VideoFolder(torch.utils.data.Dataset):
         if img.shape[3] == 1:
             img = img.squeeze(3)
         return img.cpu().numpy()
-

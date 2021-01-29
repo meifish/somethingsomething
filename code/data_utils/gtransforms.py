@@ -66,7 +66,7 @@ class GroupNormalize(object):
     def __call__(self, tensor):  # (T, 3, 224, 224)
         for b in range(tensor.size(0)):
             for t, m, s in zip(tensor[b], self.mean, self.std):
-                t.sub_(m).div_(s)
+                t.sub_(m).div_(s)  # looks like tensor substract mean and then divided by standard dev.
         return tensor
 
 
@@ -98,6 +98,7 @@ class ToTensor(object):
 
     def __call__(self, img_group):
         img_group = [self.worker(img) for img in img_group]
+        
         return torch.stack(img_group, 0)
 
 class GroupMultiScaleCrop(object):

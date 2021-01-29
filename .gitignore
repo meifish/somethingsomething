@@ -2,5 +2,7 @@ something_videos/
 something_videos_frames/
 not_used/
 bounding_box_annotations/
+.vscode/*
+.ipynb_checkpoints/
 *.jpg
 *.webm

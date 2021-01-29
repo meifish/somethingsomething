@@ -51,25 +51,14 @@ if __name__ == '__main__':
                 missing_obj = {}
 
                 for i in (action_1+action_2):
-                  
-                    t = i['template']
-                    l = i['label']
-                    
+
                     try:
-                        #obj_label = [l.split(" ")[idx] for idx in [index for index, value in enumerate(t.split(" ")) if value == "[something]"]]
-                        #print("mapping [something] to obj:", obj_label)
-                        #missing = [o for o in obj_label if o not in i['new_placeholdes']]
                         if '' in i['new_placeholdes']:
                             pprint.pprint(i)
                         
-                            #print("missing:", missing)
                             missing_obj[i['id']] = {'label': i['label'], 'template': i['template'], 'new_placeholdes': i['new_placeholdes'], 'placeholders': i['placeholders']}
                     except:
                         pass
-                #         problem_entry[i['id']] = i
-                
-                # json.dump(problem_entry, problem_log)
-                # problem_log.close()
 
 
                 count = 0
@@ -80,7 +69,6 @@ if __name__ == '__main__':
                         annotation = json.load(anno)
 
                         for j in annotation:
-                            #print(annotation[j][0]["labels"][0])
 
                             if j in missing_obj:
 
@@ -110,22 +98,5 @@ if __name__ == '__main__':
 
                 print("re-identify missing objects:", count-problem)
                 print("missing objects:", count)
-
-                # action_1 = [entry['template'] for entry in dataset if all([obj in obj_A for obj in entry['new_placeholdes']])]
-                # action_2 = [entry['template'] for entry in dataset if all([obj in obj_B for obj in entry['new_placeholdes']])]
-
-                # print("# dataset:", len(dataset))
-                # print("# Object_A", len(obj_A))
-                # print("# Object_B", len(obj_B))
-
-                # print("# of data for Action_1", len(action_1))
-                # print("# of data for Action_2", len(action_2))
-                # print("# of total data count", len(action_1)+len(action_2))
-
-                # action_1 = sorted(set(action_1))
-                # action_2 = sorted(set(action_2))
-
-                # print("# of category for Action_1", len(action_1))
-                # print("# of category for Action_2", len(action_2))
 
                 sys.exit()

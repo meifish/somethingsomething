@@ -81,12 +81,13 @@ class VideoModelCoord(nn.Module):
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
 
+
         b, _, _, _h, _w = global_img_input.size()
         # global_imgs = global_img_input.view(b*self.nr_frames, 3, _h, _w)
         # local_imgs = local_img_input.view(b*self.nr_frames*self.nr_boxes, 3, _h, _w)
-
         box_input = box_input.transpose(2, 1).contiguous()
         box_input = box_input.view(b*self.nr_boxes*self.nr_frames, 4)
+
 
         bf = self.coord_to_feature(box_input)
         bf = bf.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
@@ -104,12 +105,297 @@ class VideoModelCoord(nn.Module):
         bf_temporal_input = bf_spatial.view(b, self.nr_boxes, self.nr_frames*self.coord_feature_dim)
 
         box_features = self.box_feature_fusion(bf_temporal_input.view(b*self.nr_boxes, -1))  # (b*nr_boxes, coord_feature_dim)
+        box_features = torch.mean(box_features.view(b, self.nr_boxes, -1), dim=1)  # h = average #(b, coord_feature_dim)
+        # video_features = torch.cat([global_features, local_features, box_features], dim=1)
+        video_features = box_features
+
+        cls_output = self.classifier(video_features)  # (b, num_classes)
+        return cls_output
+
+
+class VideoModelCoordAttention(nn.Module):
+    def __init__(self, opt):
+        super(VideoModelCoordAttention, self).__init__()
+        self.nr_boxes = opt.num_boxes
+        self.nr_actions = opt.num_classes
+        self.nr_frames = opt.num_frames // 2
+        self.coord_feature_dim = opt.coord_feature_dim
+
+        self.coord_to_feature = nn.Sequential(
+            nn.Linear(4, self.coord_feature_dim//2, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim//2),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim//2, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        # This would generate the weightings to each object
+        self.attention_to_nodes = nn.Sequential(
+            nn.Linear(self.coord_feature_dim * 4, self.coord_feature_dim//2 * 4, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim//2 * 4),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim//2 * 4, 3*4, bias=False),
+            nn.BatchNorm1d(3*4),
+            nn.ReLU()
+        )
+
+
+        self.spatial_node_fusion = nn.Sequential(
+            nn.Linear(self.coord_feature_dim*2, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        self.box_feature_fusion = nn.Sequential(
+            nn.Linear(self.nr_frames*self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim),
+            # nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, 512), #self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, self.nr_actions)
+        )
+
+        if opt.fine_tune:
+            self.fine_tune(opt.fine_tune)
+
+    def fine_tune(self, restore_path, parameters_to_train=['classifier']):
+        weights = torch.load(restore_path)['state_dict']
+        new_weights = {}
+        #import pdb
+        for k, v in weights.items():
+            if not 'classifier.4' in k:
+                new_weights[k.replace('module.', '')] = v
+        #pdb.set_trace()
+        self.load_state_dict(new_weights, strict=False)
+        print('Num of weights in restore dict {}'.format(len(new_weights.keys())))
+
+        frozen_weights = 0
+        for name, param in self.named_parameters():
+            if not 'classifier.4' in name:
+
+                param.requires_grad = False
+                frozen_weights += 1
+
+            else:
+                print('Training : {}'.format(name))
+        print('Number of frozen weights {}'.format(frozen_weights))
+        assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
+                                    'Check the naming convention of the parameters'
+
+    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+        # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
+        # global_img_tensor is (b, nr_frames, 3, h, w)
+        # box_input is (b, nr_frames, nr_boxes, 4)
+
+        b, _, _, _h, _w = global_img_input.size()
+        # global_imgs = global_img_input.view(b*self.nr_frames, 3, _h, _w)
+        # local_imgs = local_img_input.view(b*self.nr_frames*self.nr_boxes, 3, _h, _w)
+        print("batch size:", b)
+        print("box_input size1:", box_input.size())
+        box_input = box_input.transpose(2, 1).contiguous()
+        print("box_input size2:", box_input.size())
+        box_input = box_input.view(b*self.nr_boxes*self.nr_frames, 4) # (1*4*2, 4)
+        print("box_input size3:", box_input.size())
+
+        # Net1
+        print("net1....................................................")
+        bf = self.coord_to_feature(box_input)  # box_input(b*n_frame*n_box, 4)
+        print("net1 output.............................................")
+        print("bf size:", bf.size())
+        bf = bf.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+        print("bf reshape:", bf.size())
+
+        clone_bf = bf.detach().clone()  #(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+        clone_bf = clone_bf.transpose(2,1).contiguous().view(-1, self.nr_boxes * self.coord_feature_dim) #(b * nr_frames, nr_boxes * coord_feature_dim)
+        attention_weight = self.attention_to_nodes(clone_bf)  # (b * nr_frames, 4*3)
+        attention_weight = attention_weight.view(b, self.nr_frames, self.nr_boxes, 3)     # (b, nr_frames, nr_boxes, 3 neighbor attention weight)
+        softmax = nn.Softmax(dim=-1)
+        attention_weight = softmax(attention_weight)
+        attention_weight = attention_weight.transpose(2,1).contiguous()      # (b, nr_boxes, nr_frames, 3)
+        attention_weight = torch.cat([attention_weight, torch.zeros(b, self.nr_boxes, self.nr_frames, 1)], dim=-1)
+
+        for obj in range(self.nr_boxes):
+            last_col = self.nr_boxes - 1
+            move_times = self.nr_boxes - obj + 1
+            
+            for offset in range(move_times):
+                col = last_col - offset
+                attention_weight[:,obj,:,col] = attention_weight[:,obj,:,col-1]
+            attention_weight[:,obj,:,obj] = 0.
+        
+        attention_weight = attention_weight.unsqueeze(-1)  # (b, nr_boxes, frame, nr_boxes, 1)
+        neighbor_bf = bf.transpose(1,2).contiguous()    # (b, frame, nr_boxes, coord_feature_dim)
+        neighbor_bf = attention_weight * neighbor_bf    # (b, nr_boxes, frame, nr_boxes, coord_feature_dim)
+        neighbor_bf = torch.sum(neighbor_bf, dim=3)     # (b, nr_boxes, frame, coord_feature_dim)
+
+        bf_and_message = torch.cat([bf, neighbor_bf], dim=3) # (b, nr_boxes, nr_frames, 2*coord_feature_dim)
+
+
+        # To be replaced
+        ########################################################################################################
+        # spatial message passing (graph)
+        # spatial_message = bf.sum(dim=1, keepdim=True)  # (b, 1, self.nr_frames, coord_feature_dim)
+        # print("spatial_message:", spatial_message.size())
+        # message passed should substract itself, and normalize to it as a single feature
+        # spatial_message = (spatial_message - bf) / (self.nr_boxes - 1)  # message passed should substract itself
+        # print("spatial_message:", spatial_message.size())
+        # bf_and_message = torch.cat([bf, spatial_message], dim=3)  # (b, nr_boxes, nr_frames, 2*coord_feature_dim)
+        # print("bf_and_message:", bf_and_message.size())
+        ########################################################################################################
+
+
+        # Net2
+        # (b*nr_boxes*nr_frames, coord_feature_dim)
+        net2_input = bf_and_message.view(b*self.nr_boxes*self.nr_frames, -1)
+        print()
+        print("net2....................................................")
+        print("bf_and_message.view(b*self.nr_boxes*self.nr_frames, -1):", net2_input.size())
+        bf_spatial = self.spatial_node_fusion(net2_input)
+        print("net2 output.............................................")
+        print("bf_spatial:", bf_spatial.size())
+        bf_spatial = bf_spatial.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+        print("bf_spatial reshape:", bf_spatial.size())
+
+        bf_temporal_input = bf_spatial.view(b, self.nr_boxes, self.nr_frames*self.coord_feature_dim)
+        print("bf_temporal_input:", bf_temporal_input.size())
+
+        # Net3
+        net3_input = bf_temporal_input.view(b*self.nr_boxes, -1)
+        print("net3....................................................")
+        print("bf_temporal_input.view(b*self.nr_boxes, -1):", net3_input.size())
+        box_features = self.box_feature_fusion(net3_input)  # (b*nr_boxes, coord_feature_dim)
+        print("net3 output.............................................")
+        print("box_features shape:", box_features.size())
+        box_features = torch.mean(box_features.view(b, self.nr_boxes, -1), dim=1)  # h = average #(b, coord_feature_dim)
+        # video_features = torch.cat([global_features, local_features, box_features], dim=1)
+        video_features = box_features
+        print("video_features shape:", video_features.size())
+
+        # Net4
+        cls_output = self.classifier(video_features)  # (b, num_classes)
+        return cls_output
+
+
+class VideoModelCoordAdd(nn.Module):
+    def __init__(self, opt):
+        super(VideoModelCoordAdd, self).__init__()
+        self.nr_boxes = opt.num_boxes
+        self.nr_actions = opt.num_classes
+        self.nr_frames = opt.num_frames // 2
+        self.coord_feature_dim = opt.coord_feature_dim
+
+        self.coord_to_feature = nn.Sequential(
+            nn.Linear(4, self.coord_feature_dim//2, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim//2),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim//2, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        self.spatial_node_fusion = nn.Sequential(
+            nn.Linear(self.coord_feature_dim*2, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        self.box_feature_fusion = nn.Sequential(
+            nn.Linear(self.nr_frames*self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim),
+            # nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, 512), #self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, self.nr_actions)
+        )
+
+        if opt.fine_tune:
+            self.fine_tune(opt.fine_tune)
+
+    def fine_tune(self, restore_path, parameters_to_train=['classifier']):
+        weights = torch.load(restore_path)['state_dict']
+        new_weights = {}
+        #import pdb
+        for k, v in weights.items():
+            if not 'classifier.4' in k:
+                new_weights[k.replace('module.', '')] = v
+        #pdb.set_trace()
+        self.load_state_dict(new_weights, strict=False)
+        print('Num of weights in restore dict {}'.format(len(new_weights.keys())))
+
+        frozen_weights = 0
+        for name, param in self.named_parameters():
+            if not 'classifier.4' in name:
+
+                param.requires_grad = False
+                frozen_weights += 1
+
+            else:
+                print('Training : {}'.format(name))
+        print('Number of frozen weights {}'.format(frozen_weights))
+        assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
+                                    'Check the naming convention of the parameters'
+
+    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+        # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
+        # global_img_tensor is (b, nr_frames, 3, h, w)
+        # box_input is (b, nr_frames, nr_boxes, 4)
+
+        print("global_img_input.size:", global_img_input.size())
+        b, _, _, _h, _w = global_img_input.size()
+        # global_imgs = global_img_input.view(b*self.nr_frames, 3, _h, _w)
+        # local_imgs = local_img_input.view(b*self.nr_frames*self.nr_boxes, 3, _h, _w)
+        box_input = box_input.transpose(2, 1).contiguous()
+        box_input = box_input.view(b*self.nr_boxes*self.nr_frames, 4)
+
+
+        bf = self.coord_to_feature(box_input)
+        bf = bf.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+
+        # spatial message passing (graph)
+        spatial_message = bf.sum(dim=1, keepdim=True)  # (b, 1, self.nr_frames, coord_feature_dim)
+        # message passed should substract itself, and normalize to it as a single feature
+        spatial_message = (spatial_message - bf)  # message passed should substract itself
+        bf_and_message = torch.cat([bf, spatial_message], dim=3)  # (b, nr_boxes, nr_frames, 2*coord_feature_dim)
+
+        # (b*nr_boxes*nr_frames, coord_feature_dim)
+        bf_spatial = self.spatial_node_fusion(bf_and_message.view(b*self.nr_boxes*self.nr_frames, -1))
+        bf_spatial = bf_spatial.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+
+        bf_temporal_input = bf_spatial.view(b, self.nr_boxes, self.nr_frames*self.coord_feature_dim)
+
+        box_features = self.box_feature_fusion(bf_temporal_input.view(b*self.nr_boxes, -1))  # (b*nr_boxes, coord_feature_dim)
         box_features = torch.mean(box_features.view(b, self.nr_boxes, -1), dim=1)  # (b, coord_feature_dim)
         # video_features = torch.cat([global_features, local_features, box_features], dim=1)
         video_features = box_features
 
         cls_output = self.classifier(video_features)  # (b, num_classes)
         return cls_output
+
 
 class VideoModelCoordLatent(nn.Module):
     def __init__(self, opt):
@@ -191,6 +477,7 @@ class VideoModelCoordLatent(nn.Module):
         # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
+
 
         b, _, _, _h, _w = global_img_input.size()
 

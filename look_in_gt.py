@@ -29,7 +29,7 @@ if __name__ == '__main__':
             print("Finding in:", i)
             ground_truth = json.load(gt)
 
-            id = '11309'
+            id = '100033'
             for entry in ground_truth:            
                 if args.id == entry['id']:
                     pprint.pprint(entry)

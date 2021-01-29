@@ -1,3 +1,11 @@
+#!/bin/bash -       
+#title           : batch_fps_conversion.sh
+#description     : This script will run ffmpeg on frame extraqction for fps 12
+#author		       : Kathryn (https://github.com/meifish)
+#date            : 2020-10-03
+#usage		       : ./batch_fps_conversion.sh
+#==============================================================================
+
 IN_DATA_DIR="./something_videos"
 OUT_DATA_DIR="./something_videos_frames"
 
@@ -8,7 +16,7 @@ fi
 
 
 # The total data size is 220847, too large to read in one time, so batch reading it
-declare -i start_video=186220
+declare -i start_video=0
 declare -i final_video=220847
 declare -i batch=10
 

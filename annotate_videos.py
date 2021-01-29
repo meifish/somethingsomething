@@ -8,6 +8,10 @@ import cv2
 import numpy as np
 import pprint
 
+
+"""
+python annotate_videos.py -vid_path "./something_videos_frames" -out_vid_path "./annotated_videos" --annot_path=""
+"""
 parser = argparse.ArgumentParser()
 parser.add_argument('-vid_path', default='videos/', type=str,
                     help='Path to the directory with videos')

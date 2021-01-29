@@ -11,11 +11,12 @@ class DatasetBase(object):
     To read json data and construct a list containing video sample `ids`,
     `label` and `path`
     """
-    def __init__(self, json_path_input, json_path_labels, data_root,
+    def __init__(self, json_path_input, json_path_labels, data_root, video_root,
                  extension, is_test=False):
         self.json_path_input = json_path_input
         self.json_path_labels = json_path_labels
         self.data_root = data_root
+        self.video_root = video_root
         self.extension = extension
         self.is_test = is_test
 
@@ -35,7 +36,8 @@ class DatasetBase(object):
                         raise ValueError("Label mismatch! Please correct")
                     item = ListData(elem['id'],
                                     label,
-                                    os.path.join(self.data_root,
+                                    #os.path.join(self.data_root,
+                                    os.path.join(self.video_root,
                                                  elem['id'] + self.extension)
                                     )
                     json_data.append(item)
@@ -46,7 +48,8 @@ class DatasetBase(object):
                     # add a dummy label for all test samples
                     item = ListData(elem['id'],
                                     "Holding something",
-                                    os.path.join(self.data_root,
+                                    #os.path.join(self.data_root,
+                                    os.path.join(self.video_root,
                                                  elem['id'] + self.extension)
                                     )
                     json_data.append(item)
@@ -55,7 +58,7 @@ class DatasetBase(object):
     def read_json_labels(self):
         classes = []
         with open(self.json_path_labels, 'r') as jsonfile:
-            # print(jsonfile)
+         
             json_reader = json.load(jsonfile)
             for elem in json_reader:
                 classes.append(elem)
@@ -76,9 +79,8 @@ class DatasetBase(object):
 
 
 class WebmDataset(DatasetBase):
-    def __init__(self, json_path_input, json_path_labels, data_root,
+    def __init__(self, json_path_input, json_path_labels, data_root, video_root,
                  is_test=False):
         EXTENSION = ".webm"
-        super().__init__(json_path_input, json_path_labels, data_root,
+        super().__init__(json_path_input, json_path_labels, data_root, video_root,
                          EXTENSION, is_test)
-
