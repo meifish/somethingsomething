@@ -1,0 +1,16 @@
+1. Please run a new virtual environment with a clean Pytorch environment:
+pip install torch torchvision
+
+
+2. Please install 2 libraries:
+pip install tensorboardx
+pip install matplotlib
+
+
+
+2. In the root folder, please run this:
+python ./code/train.py --coord_feature_dim 256 --root_frames ./toy_dataset/
+                       --json_data_train ./toy_dataset/compositional/train.json
+                       --json_data_val ./toy_dataset/compositional/validation.json 
+                       --json_file_labels ./toy_dataset/compositional/labels.json
+                       --tracked_boxes ./toy_dataset/annotation.json

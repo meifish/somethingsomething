@@ -1,3 +1,7 @@
+annotation.json
+ckpt/
+runs/
+logs/
 toy_dataset/
 something_videos/
 something_videos_frames/
@@ -7,3 +11,4 @@ bounding_box_annotations/
 .ipynb_checkpoints/
 *.jpg
 *.webm
+*.pyc
