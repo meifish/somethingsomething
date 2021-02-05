@@ -49,7 +49,7 @@ parser.add_argument('--size', default=224, type=int, metavar='N',
                     help='primary image input size')
 parser.add_argument('--start_epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--batch_size', '-b', default=48, type=int,
+parser.add_argument('--batch_size', '-b', default=72, type=int,
                     metavar='N', help='mini-batch size (default: 72)')
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='initial learning rate')
@@ -61,7 +61,7 @@ parser.add_argument('--weight_decay', '--wd', default=0.0001, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--print_freq', '-p', default=20, type=int,
+parser.add_argument('--print_freq', '-p', default=1, type=int,
                     metavar='N', help='print frequency (default: 20)')
 parser.add_argument('--log_freq', '-l', default=10, type=int,
                     metavar='N', help='frequency to write in tensorboard (default: 10)')
@@ -77,6 +77,8 @@ parser.add_argument('--num_frames', default=16, type=int, # orginally 4
                     help='num of frames for the model')
 parser.add_argument('--dataset', default='smth_smth',
                     help='which dataset to train')
+parser.add_argument('--acc_history_dir', default='./accu',
+                    help='folder to output accuracy logsper epoch')
 parser.add_argument('--logdir', default='./logs',
                     help='folder to output tensorboard logs')
 parser.add_argument('--logname', default='exp',
@@ -95,6 +97,14 @@ best_loss = 1000000
 writer = SummaryWriter('./runs')
 
 text_log = open('result', 'a')
+
+def check_gpu(msg='gpu_check'):
+    print(f'{msg:=^60}')
+    # print('Memory Usage:')
+    print(f'Allocated:, {round(torch.cuda.memory_allocated(0)/1024**3,6)}GB')
+    print(f'Allocated:, {round(torch.cuda.memory_allocated(1)/1024**3,6)}GB')
+    print('Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
+    print('Cached:   ', round(torch.cuda.memory_reserved(1)/1024**3,1), 'GB')
 
 def main():
     
@@ -143,7 +153,7 @@ def main():
     if args.start_epoch is None:
         args.start_epoch = 0
 
-    model = torch.nn.DataParallel(model, device_ids=[0, 1]).cuda()
+    model = torch.nn.DataParallel(model, device_ids=[0]).cuda()
     cudnn.benchmark = True
 
     # create training and validation dataset
@@ -184,7 +194,7 @@ def main():
     
     val_loader = torch.utils.data.DataLoader(
         dataset_val, drop_last=True,
-        batch_size=args.batch_size * 2, shuffle=False,
+        batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True
     )
 
@@ -202,15 +212,31 @@ def main():
         os.makedirs(tb_logdir)
     tb_logger = Logger(tb_logdir)
 
+    acc_history = {}
+    acc_history["acc_top1_epoch_training"] = []
+    acc_history["acc_top5_epoch_training"] = []
+    acc_history["loss_epoch_training"] = []
+
+    acc_history["acc_top1_epoch_val"] = []
+    acc_history["acc_top5_epoch_val"] = []
+    acc_history["loss_epoch_val"] = []
+
     for epoch in range(args.start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch, args.lr_steps)
 
         # train for one epoch
-        train(train_loader, model, optimizer, epoch, criterion, tb_logger)
+        loss, acc_top1, acc_top5 = train(train_loader, model, optimizer, epoch, criterion, tb_logger)
+        acc_history["acc_top1_epoch_training"].append(acc_top1)
+        acc_history["acc_top5_epoch_training"].append(acc_top5)
+        acc_history["loss_epoch_training"].append(loss)
 
         # evaluate on validation set
-        if (not args.fine_tune) or (epoch + 1) % 10 == 0:
-            loss = validate(val_loader, model, criterion, epoch=epoch, tb_logger=tb_logger)
+        # if (not args.fine_tune) or (epoch + 1) % 10 == 0:
+        if (not args.fine_tune):
+            loss, acc_top1, acc_top5 = validate(val_loader, model, criterion, epoch=epoch, tb_logger=tb_logger)
+            acc_history["acc_top1_epoch_val"].append(acc_top1)
+            acc_history["acc_top5_epoch_val"].append(acc_top5)
+            acc_history["loss_epoch_val"].append(loss)
         else:
             loss = 100
 
@@ -226,7 +252,26 @@ def main():
             },
             is_best,
             os.path.join(args.ckpt, args.arch.lower() + '_{}'.format(args.logname)))
+
+
+        # Finish one epoch, log the acc
+        if not (os.path.exists(args.acc_history_dir)):
+            os.makedirs(args.acc_history_dir)
+        acc_file = "accu_history.txt"
+        acc_file = os.path.join(args.acc_history_dir, acc_file)
+        if os.path.exists(acc_file):
+            append_write = 'a' 
+        else:
+            append_write = 'w' 
+
+        with open(acc_file, append_write) as f:
+            for key in acc_history:
+                f.write(key + "\t")
+                f.write("\t".join(str(x) for x in acc_history[key]) + "\n")
+
+
     text_log.close()
+
 
 
 def train(train_loader, model, optimizer, epoch, criterion, tb_logger=None):
@@ -239,16 +284,17 @@ def train(train_loader, model, optimizer, epoch, criterion, tb_logger=None):
 
     # switch to train mode
     model.train()
-
+   
     end = time.time()
+    # check_gpu('Start')
     for i, (vid_names, frame_tensors, global_img_tensors, box_tensors, box_categories, video_label) in enumerate(train_loader):
         
         ################################################################
         # output to tensorboard
-        print("print frame shape:", frame_tensors.shape)  #[72,8,3,224,224]
-        print("len vid_names:", len(vid_names))
+        # print("print frame shape:", frame_tensors.shape)  #[72,8,3,224,224]
+        # print("len vid_names:", len(vid_names))
 
-        for v, video in enumerate(frame_tensors): 
+        #for v, video in enumerate(frame_tensors): 
 
             #print("video shape:", video.shape)         #[8, 3, H, W]
             #frames = [frame for frame in video]       #[8, 3, H, W]
@@ -260,7 +306,7 @@ def train(train_loader, model, optimizer, epoch, criterion, tb_logger=None):
             #print("transposed shape:", transposed_frame)
             #plt.imshow(transposed_frame)
           
-            writer.add_images(vid_names[v], video)
+            #writer.add_images(vid_names[v], video)
         ################################################################
 
         model.zero_grad()
@@ -271,20 +317,12 @@ def train(train_loader, model, optimizer, epoch, criterion, tb_logger=None):
         # global_img_tensor is (b, nr_frames, 3, h, w)
 
         # compute output
-
-        print("box_tensor size:", box_tensors.size())
-
-        with torch.cuda.device(0):
-            global_img_tensors = global_img_tensors.cuda()
-            box_categories = box_categories.cuda()
-            box_tensors = box_tensors.cuda()
-            video_label = video_label.cuda()
-
-   
-
         output = model(global_img_tensors, box_categories, box_tensors, video_label)
         output = output.view((-1, len(train_loader.dataset.classes)))
+        # check_gpu('after train')
+        
         loss = criterion(output, video_label.long().cuda())
+        # check_gpu('after loss')
 
         acc1, acc5 = accuracy(output.cpu(), video_label, topk=(1, 5))
 
@@ -330,6 +368,9 @@ def train(train_loader, model, optimizer, epoch, criterion, tb_logger=None):
 
             tb_logger.flush()
 
+    # Finish training for one epoch
+    return losses.avg, acc_top1.avg, acc_top5.avg
+
 
 def validate(val_loader, model, criterion, epoch=None, tb_logger=None, class_to_idx=None):
     batch_time = AverageMeter()
@@ -343,6 +384,8 @@ def validate(val_loader, model, criterion, epoch=None, tb_logger=None, class_to_
 
     end = time.time()
     for i, (vid_names, frame_tensors, global_img_tensors, box_tensors, box_categories, video_label) in enumerate(val_loader):
+        
+        # check_gpu('start val')
         # compute output
         with torch.no_grad():
             output = model(global_img_tensors, box_categories, box_tensors, video_label, is_inference=True)
@@ -354,10 +397,14 @@ def validate(val_loader, model, criterion, epoch=None, tb_logger=None, class_to_
                 logits_matrix.append(output.cpu().data.numpy())
                 targets_list.append(video_label.cpu().numpy())
 
+        # check_gpu('before loss update')
+
         # measure accuracy and record loss
         losses.update(loss.item(), global_img_tensors.size(0))
         acc_top1.update(acc1.item(), global_img_tensors.size(0))
         acc_top5.update(acc5.item(), global_img_tensors.size(0))
+
+        # check_gpu('after next round')
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -387,7 +434,7 @@ def validate(val_loader, model, criterion, epoch=None, tb_logger=None, class_to_
 
         tb_logger.flush()
 
-    return losses.avg
+    return losses.avg, acc_top1.avg, acc_top5.avg
 
 
 def save_checkpoint(state, is_best, filename):
@@ -413,11 +460,14 @@ def accuracy(output, target, topk=(1,)):
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
+  
 
         res = []
         for k in topk:
+            
             correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
+
         return res
 
 

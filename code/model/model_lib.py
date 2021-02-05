@@ -203,20 +203,20 @@ class VideoModelCoordAttention(nn.Module):
         b, _, _, _h, _w = global_img_input.size()
         # global_imgs = global_img_input.view(b*self.nr_frames, 3, _h, _w)
         # local_imgs = local_img_input.view(b*self.nr_frames*self.nr_boxes, 3, _h, _w)
-        print("batch size:", b)
-        print("box_input size1:", box_input.size())
+        # print("batch size:", b)
+        # print("box_input size1:", box_input.size())
         box_input = box_input.transpose(2, 1).contiguous()
-        print("box_input size2:", box_input.size())
+        # print("box_input size2:", box_input.size())
         box_input = box_input.view(b*self.nr_boxes*self.nr_frames, 4) # (1*4*2, 4)
-        print("box_input size3:", box_input.size())
+        # print("box_input size3:", box_input.size())
 
         # Net1
-        print("net1....................................................")
+        # print("net1....................................................")
         bf = self.coord_to_feature(box_input)  # box_input(b*n_frame*n_box, 4)
-        print("net1 output.............................................")
-        print("bf size:", bf.size())
+        # print("net1 output.............................................")
+        # print("bf size:", bf.size())
         bf = bf.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
-        print("bf reshape:", bf.size())
+        # print("bf reshape:", bf.size())
 
         clone_bf = bf.detach().clone()  #(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
         clone_bf = clone_bf.transpose(2,1).contiguous().view(-1, self.nr_boxes * self.coord_feature_dim) #(b * nr_frames, nr_boxes * coord_feature_dim)
@@ -225,7 +225,8 @@ class VideoModelCoordAttention(nn.Module):
         softmax = nn.Softmax(dim=-1)
         attention_weight = softmax(attention_weight)
         attention_weight = attention_weight.transpose(2,1).contiguous()      # (b, nr_boxes, nr_frames, 3)
-        attention_weight = torch.cat([attention_weight, torch.zeros(b, self.nr_boxes, self.nr_frames, 1)], dim=-1)
+        zero_1d_tensor = torch.zeros(b, self.nr_boxes, self.nr_frames, 1).cuda()
+        attention_weight = torch.cat([attention_weight, zero_1d_tensor], dim=-1)
 
         for obj in range(self.nr_boxes):
             last_col = self.nr_boxes - 1
@@ -237,7 +238,13 @@ class VideoModelCoordAttention(nn.Module):
             attention_weight[:,obj,:,obj] = 0.
         
         attention_weight = attention_weight.unsqueeze(-1)  # (b, nr_boxes, frame, nr_boxes, 1)
+        
+        # print("bf size:", bf.size())
         neighbor_bf = bf.transpose(1,2).contiguous()    # (b, frame, nr_boxes, coord_feature_dim)
+        neighbor_bf = neighbor_bf.unsqueeze(1)          # (b, frame, 1, nr_boxes, coord_feature_dim)
+
+        # print("attention weight size:", attention_weight.size())
+        # print("neighbor_bf size:", neighbor_bf.size())
         neighbor_bf = attention_weight * neighbor_bf    # (b, nr_boxes, frame, nr_boxes, coord_feature_dim)
         neighbor_bf = torch.sum(neighbor_bf, dim=3)     # (b, nr_boxes, frame, coord_feature_dim)
 
@@ -260,29 +267,29 @@ class VideoModelCoordAttention(nn.Module):
         # Net2
         # (b*nr_boxes*nr_frames, coord_feature_dim)
         net2_input = bf_and_message.view(b*self.nr_boxes*self.nr_frames, -1)
-        print()
-        print("net2....................................................")
-        print("bf_and_message.view(b*self.nr_boxes*self.nr_frames, -1):", net2_input.size())
+        # print()
+        # print("net2....................................................")
+        # print("bf_and_message.view(b*self.nr_boxes*self.nr_frames, -1):", net2_input.size())
         bf_spatial = self.spatial_node_fusion(net2_input)
-        print("net2 output.............................................")
-        print("bf_spatial:", bf_spatial.size())
+        # print("net2 output.............................................")
+        # print("bf_spatial:", bf_spatial.size())
         bf_spatial = bf_spatial.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
-        print("bf_spatial reshape:", bf_spatial.size())
+        # print("bf_spatial reshape:", bf_spatial.size())
 
         bf_temporal_input = bf_spatial.view(b, self.nr_boxes, self.nr_frames*self.coord_feature_dim)
-        print("bf_temporal_input:", bf_temporal_input.size())
+        # print("bf_temporal_input:", bf_temporal_input.size())
 
         # Net3
         net3_input = bf_temporal_input.view(b*self.nr_boxes, -1)
-        print("net3....................................................")
-        print("bf_temporal_input.view(b*self.nr_boxes, -1):", net3_input.size())
+        # print("net3....................................................")
+        # print("bf_temporal_input.view(b*self.nr_boxes, -1):", net3_input.size())
         box_features = self.box_feature_fusion(net3_input)  # (b*nr_boxes, coord_feature_dim)
-        print("net3 output.............................................")
-        print("box_features shape:", box_features.size())
+        # print("net3 output.............................................")
+        # print("box_features shape:", box_features.size())
         box_features = torch.mean(box_features.view(b, self.nr_boxes, -1), dim=1)  # h = average #(b, coord_feature_dim)
         # video_features = torch.cat([global_features, local_features, box_features], dim=1)
         video_features = box_features
-        print("video_features shape:", video_features.size())
+        # print("video_features shape:", video_features.size())
 
         # Net4
         cls_output = self.classifier(video_features)  # (b, num_classes)
@@ -365,7 +372,7 @@ class VideoModelCoordAdd(nn.Module):
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
 
-        print("global_img_input.size:", global_img_input.size())
+        # print("global_img_input.size:", global_img_input.size())
         b, _, _, _h, _w = global_img_input.size()
         # global_imgs = global_img_input.view(b*self.nr_frames, 3, _h, _w)
         # local_imgs = local_img_input.view(b*self.nr_frames*self.nr_boxes, 3, _h, _w)
