@@ -10,6 +10,9 @@ from numpy.random import choice as ch
 import json
 import torchvision.transforms.functional as F
 import torchvision
+import logging
+
+logging.basicConfig(filename='error.log', level=logging.DEBUG)
 
 
 class VideoFolder(torch.utils.data.Dataset):
@@ -116,7 +119,8 @@ class VideoFolder(torch.utils.data.Dataset):
             try:
                 vid_names.append(listdata.id)
                 labels.append(listdata.label)
-                frames_path = join(os.path.dirname(self.data_root), "frames", "{list_id}".format(list_id=listdata.id))
+                # frames_path = join(os.path.dirname(self.data_root), "frames", "{list_id}".format(list_id=listdata.id))
+                frames_path = join(os.path.dirname(self.data_root), "{list_id}".format(list_id=listdata.id))
                 frames = os.listdir(frames_path)
                 frame_cnts.append(int(len(frames)))
             except Exception as e:
@@ -134,7 +138,8 @@ class VideoFolder(torch.utils.data.Dataset):
         :param frame_idx: index
         :return:
         """
-        return Image.open(join(os.path.dirname(self.data_root), 'frames', vid_name, '%04d.jpg' % (frame_idx + 1))).convert('RGB')
+        # return Image.open(join(os.path.dirname(self.data_root), 'frames', vid_name, '%04d.jpg' % (frame_idx + 1))).convert('RGB')
+        return Image.open(join(os.path.dirname(self.data_root), vid_name, '%04d.jpg' % (frame_idx + 1))).convert('RGB')
 
     def _sample_indices(self, nr_video_frames):
         average_duration = nr_video_frames * 1.0 / self.coord_nr_frames
@@ -301,12 +306,14 @@ class VideoFolder(torch.utils.data.Dataset):
                 # load box into tensor
                 try:
                     box_tensors[frame_index, global_box_id] = torch.tensor(gt_box).float()
-                except:
-                    pass
+                except Exception:
+                    logging.exception("Box tensor extraction error. ID:", self.vid_names[index])
                 # load box category
-                
-                box_categories[frame_index, global_box_id] = 1 if box_data['standard_category'] == 'hand' else 2  # 0 is for none
-                
+
+                try:                   
+                    box_categories[frame_index, global_box_id] = 1 if box_data['standard_category'] == 'hand' else 2  # 0 is for none
+                except Exception:
+                    logging.exception("Box categories error. ID:", self.vid_names[index])
                 # load image into tensor
                 x0, y0, x1, y1 = list(map(int, [x0, y0, x1, y1]))
 

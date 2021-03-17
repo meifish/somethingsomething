@@ -14,8 +14,6 @@ from utils import save_results
 from torch.utils.tensorboard import SummaryWriter
 
 
-
-
 parser = argparse.ArgumentParser(description='PyTorch Smth-Else')
 
 # Path related arguments
@@ -28,6 +26,15 @@ python ./code/train.py --coord_feature_dim 256 --root_frames ./toy_dataset/
                         --json_file_labels ./toy_dataset/compositional/labels.json
                         --tracked_boxes ./toy_dataset/annotation.json
                         --model coordAttention
+
+python ./code/train.py --coord_feature_dim 256 --root_frames ./something_videos_frames/
+                        --json_data_train ./code/dataset_splits/compositional/train.json
+                        --json_data_val ./code/dataset_splits/compositional/validation.json 
+                        --json_file_labels ./code/dataset_splits/compositional/labels.json
+                        --tracked_boxes ./annotation.json
+                        --model coordAttention
+                        --logname exp_attention_fulldata
+
 """
 
 parser.add_argument('--model',
@@ -57,7 +64,7 @@ parser.add_argument('--lr_steps', default=[24, 35, 45], type=float, nargs="+",
                     metavar='LRSteps', help='epochs to decay learning rate by 10')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
-parser.add_argument('--weight_decay', '--wd', default=0.0001, type=float,
+parser.add_argument('--weight_decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -453,6 +460,7 @@ def adjust_learning_rate(optimizer, epoch, lr_steps):
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
+
     with torch.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
@@ -460,15 +468,17 @@ def accuracy(output, target, topk=(1,)):
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
-  
+   
 
         res = []
         for k in topk:
-            
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+            #correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
 
         return res
+
+
 
 
 if __name__ == '__main__':
