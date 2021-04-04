@@ -1,6 +1,6 @@
 # somethingsomething
 This is extended work from fork of https://github.com/joaanna/something_else
-This repo adds soft attention model, and provides visualization tool to generate 1/ confused heatmap and 2/ annotation of video frames with attention weight with respect to each bounding box in the frame.
+This repo adds a Soft Attention model, which improves the accuracy of the original STIN model. Other miscellaneous tools include the visualization codes that generates: 1/ confused heatmap and 2/ annotation of bounding box and prediction/ground truth on video frames, with attention weight labeled.
 
 ### Add Dataset
 Download videos from the dataset provider:
