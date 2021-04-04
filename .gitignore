@@ -12,8 +12,10 @@ bounding_box_annotations/
 errorlog/
 .vscode/*
 .ipynb_checkpoints/
+error.log
 *.jpg
 *.webm
 *.pyc
 *.p
 *.txt
+*.json
