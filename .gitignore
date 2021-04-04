@@ -5,10 +5,15 @@ logs/
 toy_dataset/
 something_videos/
 something_videos_frames/
+something_videos_frames_to_annotate/
+annotated_videos/
 not_used/
 bounding_box_annotations/
+errorlog/
 .vscode/*
 .ipynb_checkpoints/
 *.jpg
 *.webm
 *.pyc
+*.p
+*.txt
