@@ -1,5 +1,6 @@
 # somethingsomething
-Fork from https://github.com/joaanna/something_else
+This is extended work from fork of https://github.com/joaanna/something_else
+This repo adds soft attention model, and provides visualization tool to generate 1/ confused heatmap and 2/ annotation of video frames with attention weight with respect to each bounding box in the frame.
 
 ### Add Dataset
 Download videos from the dataset provider:
