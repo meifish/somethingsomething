@@ -76,7 +76,7 @@ class VideoModelCoord(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
         # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
@@ -120,6 +120,7 @@ class VideoModelCoordAttention(nn.Module):
         self.nr_actions = opt.num_classes
         self.nr_frames = opt.num_frames // 2
         self.coord_feature_dim = opt.coord_feature_dim
+        self.batch_attention_weight = None
 
         self.coord_to_feature = nn.Sequential(
             nn.Linear(4, self.coord_feature_dim//2, bias=False),
@@ -195,20 +196,14 @@ class VideoModelCoordAttention(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
         # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
 
         b, _, _, _h, _w = global_img_input.size()
-        # global_imgs = global_img_input.view(b*self.nr_frames, 3, _h, _w)
-        # local_imgs = local_img_input.view(b*self.nr_frames*self.nr_boxes, 3, _h, _w)
-        # print("batch size:", b)
-        # print("box_input size1:", box_input.size())
         box_input = box_input.transpose(2, 1).contiguous()
-        # print("box_input size2:", box_input.size())
         box_input = box_input.view(b*self.nr_boxes*self.nr_frames, 4) # (1*4*2, 4)
-        # print("box_input size3:", box_input.size())
 
         # Net1
         # print("net1....................................................")
@@ -218,26 +213,35 @@ class VideoModelCoordAttention(nn.Module):
         bf = bf.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
         # print("bf reshape:", bf.size())
 
-        clone_bf = bf.detach().clone()  #(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
-        clone_bf = clone_bf.transpose(2,1).contiguous().view(-1, self.nr_boxes * self.coord_feature_dim) #(b * nr_frames, nr_boxes * coord_feature_dim)
+        clone_bf = bf.detach().clone()    #(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+        clone_bf = clone_bf.transpose(2,1).contiguous().view(-1, self.nr_boxes * self.coord_feature_dim)  #(b * nr_frames, nr_boxes * coord_feature_dim)
         attention_weight = self.attention_to_nodes(clone_bf)  # (b * nr_frames, 4*3)
         attention_weight = attention_weight.view(b, self.nr_frames, self.nr_boxes, 3)     # (b, nr_frames, nr_boxes, 3 neighbor attention weight)
         softmax = nn.Softmax(dim=-1)
         attention_weight = softmax(attention_weight)
-        attention_weight = attention_weight.transpose(2,1).contiguous()      # (b, nr_boxes, nr_frames, 3)
+        
+
+        attention_weight = attention_weight.transpose(2,1).contiguous()     # (b, nr_boxes, nr_frames, 3) 
+        #print("attention_weight1:", attention_weight)
+
         zero_1d_tensor = torch.zeros(b, self.nr_boxes, self.nr_frames, 1).cuda()
         attention_weight = torch.cat([attention_weight, zero_1d_tensor], dim=-1)
 
         for obj in range(self.nr_boxes):
             last_col = self.nr_boxes - 1
-            move_times = self.nr_boxes - obj + 1
+            move_times = self.nr_boxes - obj   #move_times = self.nr_boxes - obj + 1  
             
-            for offset in range(move_times):
-                col = last_col - offset
+            for offset in range(move_times): 
+                col = last_col - offset  
                 attention_weight[:,obj,:,col] = attention_weight[:,obj,:,col-1]
             attention_weight[:,obj,:,obj] = 0.
         
+        # Store the batch attention result
+        self.batch_attention_weight = attention_weight     # (b, nr_boxes, frame, nr_boxes)
+        #print("attention_weight2:", attention_weight)
+
         attention_weight = attention_weight.unsqueeze(-1)  # (b, nr_boxes, frame, nr_boxes, 1)
+        
         
         # print("bf size:", bf.size())
         neighbor_bf = bf.transpose(1,2).contiguous()    # (b, frame, nr_boxes, coord_feature_dim)
@@ -249,20 +253,6 @@ class VideoModelCoordAttention(nn.Module):
         neighbor_bf = torch.sum(neighbor_bf, dim=3)     # (b, nr_boxes, frame, coord_feature_dim)
 
         bf_and_message = torch.cat([bf, neighbor_bf], dim=3) # (b, nr_boxes, nr_frames, 2*coord_feature_dim)
-
-
-        # To be replaced
-        ########################################################################################################
-        # spatial message passing (graph)
-        # spatial_message = bf.sum(dim=1, keepdim=True)  # (b, 1, self.nr_frames, coord_feature_dim)
-        # print("spatial_message:", spatial_message.size())
-        # message passed should substract itself, and normalize to it as a single feature
-        # spatial_message = (spatial_message - bf) / (self.nr_boxes - 1)  # message passed should substract itself
-        # print("spatial_message:", spatial_message.size())
-        # bf_and_message = torch.cat([bf, spatial_message], dim=3)  # (b, nr_boxes, nr_frames, 2*coord_feature_dim)
-        # print("bf_and_message:", bf_and_message.size())
-        ########################################################################################################
-
 
         # Net2
         # (b*nr_boxes*nr_frames, coord_feature_dim)
@@ -294,6 +284,226 @@ class VideoModelCoordAttention(nn.Module):
         # Net4
         cls_output = self.classifier(video_features)  # (b, num_classes)
         return cls_output
+
+
+class VideoModelCoorSemDualdAttention(nn.Module):
+    def __init__(self, opt):
+        super(VideoModelCoorSemDualdAttention, self).__init__()
+        self.nr_boxes = opt.num_boxes
+        self.nr_actions = opt.num_classes
+        self.nr_frames = opt.num_frames // 2
+        self.coord_feature_dim = opt.coord_feature_dim
+
+        # Coord MLP
+        self.coord_to_feature = nn.Sequential(
+            nn.Linear(4, self.coord_feature_dim//2, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim//2),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim//2, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        # Coord Attention (3*4 weights)
+        self.attention_to_nodes = nn.Sequential(
+            nn.Linear(self.coord_feature_dim * 4, self.coord_feature_dim//2 * 4, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim//2 * 4),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim//2 * 4, 3*4, bias=False),
+            nn.BatchNorm1d(3*4),
+            nn.ReLU()
+        )
+
+        # W2v MLP
+        self.w2v_finetune = nn.Sequential(
+            nn.Linear(300, 400, bias=False),
+            nn.BatchNorm1d(400),
+            nn.ReLU(inplace=True),
+            nn.Linear(400, 300, bias=False),
+            nn.BatchNorm1d(300),
+            nn.ReLU()
+        )
+
+        # Word2vec Attention (3*4 weights)
+        self.attention_to_w2v = nn.Sequential(
+            nn.Linear(300 * 4, 150 * 4, bias=False),
+            nn.BatchNorm1d(150 * 4),
+            nn.ReLU(inplace=True),
+            nn.Linear(150 * 4, 3*4, bias=False),
+            nn.BatchNorm1d(3*4),
+            nn.ReLU()
+        )
+
+
+        self.spatial_semantic_node_fusion = nn.Sequential(
+            nn.Linear(self.coord_feature_dim*2 + 300*2, self.coord_feature_dim*2, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim*2),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim*2, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+
+        self.box_feature_fusion = nn.Sequential(
+            nn.Linear(self.nr_frames*self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim, bias=False),
+            nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU()
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(self.coord_feature_dim, self.coord_feature_dim),
+            # nn.BatchNorm1d(self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.coord_feature_dim, 512), #self.coord_feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, self.nr_actions)
+        )
+
+        if opt.fine_tune:
+            self.fine_tune(opt.fine_tune)
+
+    def fine_tune(self, restore_path, parameters_to_train=['classifier']):
+        weights = torch.load(restore_path)['state_dict']
+        new_weights = {}
+        #import pdb
+        for k, v in weights.items():
+            if not 'classifier.4' in k:
+                new_weights[k.replace('module.', '')] = v
+        #pdb.set_trace()
+        self.load_state_dict(new_weights, strict=False)
+        print('Num of weights in restore dict {}'.format(len(new_weights.keys())))
+
+        frozen_weights = 0
+        for name, param in self.named_parameters():
+            if not 'classifier.4' in name:
+
+                param.requires_grad = False
+                frozen_weights += 1
+
+            else:
+                print('Training : {}'.format(name))
+        print('Number of frozen weights {}'.format(frozen_weights))
+        assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
+                                    'Check the naming convention of the parameters'
+
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
+        # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
+        # global_img_tensor is (b, nr_frames, 3, h, w)
+        # box_input is (b, nr_frames, nr_boxes, 4)
+
+        b, _, _, _h, _w = global_img_input.size()
+        box_input = box_input.transpose(2, 1).contiguous()
+        w2v_input = word2vec_features.transpose(2,1).contiguous()     # (b, self.nr_frames, self.nr_boxes, 300)
+        box_input = box_input.view(b*self.nr_boxes*self.nr_frames, 4) # (1*4*2, 4)
+
+        # Net1
+        # print("net1....................................................")
+        bf = self.coord_to_feature(box_input)  # box_input(b*n_frame*n_box, 4)
+        bf = bf.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+
+        #####################################################
+        # Attention to nodes
+        #####################################################
+
+        clone_bf = bf.detach().clone()  #(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+        clone_bf = clone_bf.transpose(2,1).contiguous().view(-1, self.nr_boxes * self.coord_feature_dim) #(b * nr_frames, nr_boxes * coord_feature_dim)
+        attention_weight = self.attention_to_nodes(clone_bf)  # (b * nr_frames, 4*3)
+        attention_weight = attention_weight.view(b, self.nr_frames, self.nr_boxes, 3)     # (b, nr_frames, nr_boxes, 3 neighbor attention weight)
+        softmax = nn.Softmax(dim=-1)
+        attention_weight = softmax(attention_weight)
+        attention_weight = attention_weight.transpose(2,1).contiguous()      # (b, nr_boxes, nr_frames, 3)
+        zero_1d_tensor = torch.zeros(b, self.nr_boxes, self.nr_frames, 1).cuda()
+        attention_weight = torch.cat([attention_weight, zero_1d_tensor], dim=-1)
+
+        for obj in range(self.nr_boxes):
+            last_col = self.nr_boxes - 1
+            move_times = self.nr_boxes - obj + 1
+            
+            for offset in range(move_times):
+                col = last_col - offset
+                attention_weight[:,obj,:,col] = attention_weight[:,obj,:,col-1]
+            attention_weight[:,obj,:,obj] = 0.
+        
+        attention_weight = attention_weight.unsqueeze(-1)  # (b, nr_boxes, frame, nr_boxes, 1)
+
+        # print("bf size:", bf.size())
+        neighbor_bf = bf.transpose(1,2).contiguous()    # (b, frame, nr_boxes, coord_feature_dim)
+        neighbor_bf = neighbor_bf.unsqueeze(1)          # (b, frame, 1, nr_boxes, coord_feature_dim)
+
+        # print("attention weight size:", attention_weight.size())
+        # print("neighbor_bf size:", neighbor_bf.size())
+        neighbor_bf = attention_weight * neighbor_bf    # (b, nr_boxes, frame, nr_boxes, coord_feature_dim)
+        neighbor_bf = torch.sum(neighbor_bf, dim=3)     # (b, nr_boxes, frame, coord_feature_dim)
+
+
+        #####################################################
+        # Attention to w2v
+        #####################################################
+        clone_w2v = w2v_input.detach().clone()  #(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+        clone_w2v = clone_w2v.transpose(2,1).contiguous().view(-1, self.nr_boxes * 300)
+        atten_w2v_weight = self.attention_to_w2v(clone_w2v)  # (b * nr_frames, 4*3)
+        atten_w2v_weight = atten_w2v_weight.view(b, self.nr_frames, self.nr_boxes, 3)     # (b, nr_frames, nr_boxes, 3 neighbor attention weight)
+        softmax = nn.Softmax(dim=-1)
+        atten_w2v_weight = softmax(atten_w2v_weight)
+        atten_w2v_weight = atten_w2v_weight.transpose(2,1).contiguous()      # (b, nr_boxes, nr_frames, 3)
+        zero_1d_tensor = torch.zeros(b, self.nr_boxes, self.nr_frames, 1).cuda()
+        atten_w2v_weight = torch.cat([atten_w2v_weight, zero_1d_tensor], dim=-1)
+
+        for obj in range(self.nr_boxes):
+            last_col = self.nr_boxes - 1
+            move_times = self.nr_boxes - obj + 1
+            
+            for offset in range(move_times):
+                col = last_col - offset
+                atten_w2v_weight[:,obj,:,col] = atten_w2v_weight[:,obj,:,col-1]
+            atten_w2v_weight[:,obj,:,obj] = 0.
+        
+        atten_w2v_weight = atten_w2v_weight.unsqueeze(-1)  # (b, nr_boxes, frame, nr_boxes, 1)
+        
+        neighbor_w2vf = w2v_input.transpose(1,2).contiguous()    # (b, frame, nr_boxes, 300)
+        neighbor_w2vf = neighbor_w2vf.unsqueeze(1)               # (b, frame, 1, nr_boxes, 300)
+
+        # print("attention weight size:", attention_weight.size())
+        # print("neighbor_bf size:", neighbor_bf.size())
+        neighbor_w2vf = atten_w2v_weight * neighbor_w2vf    # (b, nr_boxes, frame, nr_boxes, 300)
+        neighbor_w2vf = torch.sum(neighbor_w2vf, dim=3)     # (b, nr_boxes, frame, 300)
+
+        ######################################################
+        # Concate the node and neighbor's in both 
+        #    *weighted spatial features
+        #    *weighted semantic features
+        ######################################################
+        bf_and_message = torch.cat([bf, neighbor_bf], dim=3) # (b, nr_boxes, nr_frames, 2*coord_feature_dim)
+        w2vf_and_message = torch.cat([w2v_input, neighbor_w2vf], dim=3) # (b, nr_boxes, nr_frames, 2*300)
+        aggre_message = torch.cat([bf_and_message, w2vf_and_message], dim=3)
+
+        
+        net2_input = aggre_message.view(b*self.nr_boxes*self.nr_frames, -1)
+        spatialf_semanticf = self.spatial_semantic_node_fusion(net2_input)
+        spatialf_semanticf = spatialf_semanticf.view(b, self.nr_boxes, self.nr_frames, self.coord_feature_dim)
+
+        temporal_input = spatialf_semanticf.view(b, self.nr_boxes, self.nr_frames*self.coord_feature_dim)
+
+        # Net3
+        net3_input = temporal_input.view(b*self.nr_boxes, -1)
+        # print("net3....................................................")
+        # print("bf_temporal_input.view(b*self.nr_boxes, -1):", net3_input.size())
+        box_features = self.box_feature_fusion(net3_input)  # (b*nr_boxes, coord_feature_dim)
+        # print("net3 output.............................................")
+        # print("box_features shape:", box_features.size())
+        box_features = torch.mean(box_features.view(b, self.nr_boxes, -1), dim=1)  # h = average #(b, coord_feature_dim)
+        # video_features = torch.cat([global_features, local_features, box_features], dim=1)
+        video_features = box_features
+        # print("video_features shape:", video_features.size())
+
+        # Net4
+        cls_output = self.classifier(video_features)  # (b, num_classes)
+        return cls_output
+
 
 
 class VideoModelCoordAdd(nn.Module):
@@ -367,7 +577,7 @@ class VideoModelCoordAdd(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
         # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
@@ -480,7 +690,7 @@ class VideoModelCoordLatent(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
         # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
@@ -622,7 +832,7 @@ class VideoModelCoordLatentNL(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features,video_label, is_inference=False):
         # local_img_tensor is (b, nr_frames, nr_boxes, 3, h, w)
         # global_img_tensor is (b, nr_frames, 3, h, w)
         # box_input is (b, nr_frames, nr_boxes, 4)
@@ -824,7 +1034,7 @@ class VideoModelGlobalCoordLatent(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
 
         """
         V: num of videos
@@ -1048,7 +1258,7 @@ class VideoModelGlobalCoordLatentNL(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
 
         """
         V: num of videos
@@ -1154,7 +1364,7 @@ class VideoGlobalModel(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, local_img_input, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, local_img_input, box_input, word2vec_features, video_label, is_inference=False):
         """
         V: num of videos
         T: num of frames
@@ -1294,7 +1504,7 @@ class VideoModelGlobalCoord(nn.Module):
         assert frozen_weights != 0, 'You are trying to fine tune, but no weights are frozen!!! ' \
                                     'Check the naming convention of the parameters'
 
-    def forward(self, global_img_input, box_categories, box_input, video_label, is_inference=False):
+    def forward(self, global_img_input, box_categories, box_input, word2vec_features, video_label, is_inference=False):
 
         """
         V: num of videos

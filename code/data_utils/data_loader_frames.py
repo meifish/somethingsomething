@@ -24,6 +24,7 @@ class VideoFolder(torch.utils.data.Dataset):
                  root,
                  file_input,
                  file_labels,
+                 word2vec_weights,
                  frames_duration,
                  video_root,
                  args=None,
@@ -38,6 +39,7 @@ class VideoFolder(torch.utils.data.Dataset):
         :param root: data root path
         :param file_input: inputs path
         :param file_labels: labels path
+        :param word2vec_weights: pre-trained 300 dims word2vect features,
         :param frames_duration: number of frames
         :param multi_crop_test:
         :param sample_rate: FPS
@@ -52,10 +54,11 @@ class VideoFolder(torch.utils.data.Dataset):
         self.if_augment = if_augment
         self.is_val = is_val
         self.data_root = root
-        self.dataset_object = WebmDataset(file_input, file_labels, root, video_root, is_test=is_test)
+        self.dataset_object = WebmDataset(file_input, file_labels, word2vec_weights, root, video_root, model, is_test=is_test)
         self.json_data = self.dataset_object.json_data
         self.classes = self.dataset_object.classes
         self.classes_dict = self.dataset_object.classes_dict
+        self.word2vec = self.dataset_object.word2vec
         self.model = model
         self.num_boxes = num_boxes
 
@@ -114,11 +117,11 @@ class VideoFolder(torch.utils.data.Dataset):
         self.label_strs = ['_'.join(class_name.split(' ')) for class_name in self.classes]
         vid_names = []   # video ids
         frame_cnts = []  # len_of_frames_in_each_video_frame_folder
-        labels = []      # video labels
+        labels = []      # video labels (text)
         for listdata in self.json_data:
             try:
                 vid_names.append(listdata.id)
-                labels.append(listdata.label)
+                labels.append(listdata.label) 
                 # frames_path = join(os.path.dirname(self.data_root), "frames", "{list_id}".format(list_id=listdata.id))
                 frames_path = join(os.path.dirname(self.data_root), "{list_id}".format(list_id=listdata.id))
                 frames = os.listdir(frames_path)
@@ -216,7 +219,7 @@ class VideoFolder(torch.utils.data.Dataset):
         folder_id = str(int(self.vid_names[index]))
         video_data = self.box_annotations[folder_id]
 
-        # union the objects of two frames
+        # union the objects of frames
         object_set = set()
         for frame_id in coord_frame_list:
             try:
@@ -234,7 +237,7 @@ class VideoFolder(torch.utils.data.Dataset):
         frames = []
         for fidx in coord_frame_list:
             frames.append(self.load_frame(self.vid_names[index], fidx))
-            #break  # only one image
+            break  # only one image (disable this line to include different frames)
         
         height, width = frames[0].height, frames[0].width
 
@@ -247,29 +250,37 @@ class VideoFolder(torch.utils.data.Dataset):
             offset_h, offset_w, (crop_h, crop_w) = 0, 0, self.pre_resize_shape
         #----------Build new frames for apperance model (frame_list)--------------#
         # Apperance model does not use crop and resized image
-        if self.model not in  ['coord', 'coordAdd', 'coord_latent', 'coord_latent_nl', 'coord_latent_concat']:
+        coord_base_model = ['coord', 'coordAdd', 'coordAttention', 'coordSemDualAttention', 'coord_latent', 'coord_latent_nl', 'coord_latent_concat']
+        if self.model not in coord_base_model:
             frames = []
             for fidx in frame_list:
                 frames.append(self.load_frame(self.vid_names[index], fidx))
             
         else: # STIN model (Objects model)
             # Now for accelerating just pretend we have had frames
-            #frames = frames * self.in_duration
-            pass
+            frames = frames * self.in_duration
+            #pass
 
 
         scale_resize_w, scale_resize_h = self.pre_resize_shape[1] / float(width), self.pre_resize_shape[0] / float(height)
         scale_crop_w, scale_crop_h = 224 / float(crop_w), 224 / float(crop_h)
 
         box_tensors = torch.zeros((self.coord_nr_frames, self.num_boxes, 4), dtype=torch.float32)  # (cx, cy, w, h)
-
         box_categories = torch.zeros((self.coord_nr_frames, self.num_boxes)) 
+
+        if self.word2vec:
+            word2vec_features = torch.zeros((self.coord_nr_frames, self.num_boxes, 300), dtype=torch.float32) # each word has 300 dims
+        else:
+            word2vec_features = []
+
         for frame_index, frame_id in enumerate(coord_frame_list):
             try:
                 frame_data = video_data[frame_id]
             except:
                 frame_data = {'labels': []}
             for box, box_data in enumerate(frame_data['labels']):
+                category = box_data['category']
+                
                 standard_category = box_data['standard_category']
                 global_box_id = object_set.index(standard_category)
 
@@ -308,37 +319,53 @@ class VideoFolder(torch.utils.data.Dataset):
                     box_tensors[frame_index, global_box_id] = torch.tensor(gt_box).float()
                 except Exception:
                     logging.exception("Box tensor extraction error. ID:", self.vid_names[index])
-                # load box category
 
+                # load box category
                 try:                   
                     box_categories[frame_index, global_box_id] = 1 if box_data['standard_category'] == 'hand' else 2  # 0 is for none
                 except Exception:
                     logging.exception("Box categories error. ID:", self.vid_names[index])
+
+                # load word2vec features
+                if self.word2vec:
+                    word2vec_feature = self.word2vec.get_vec(category)
+                    try:
+                        word2vec_features[frame_index, global_box_id] = torch.from_numpy(np.copy(word2vec_feature))
+                    except Exception:
+                        logging.exception("Word2vec error. ID:", self.vid_names[index])
+
                 # load image into tensor
                 x0, y0, x1, y1 = list(map(int, [x0, y0, x1, y1]))
 
- 
-        return self.vid_names[index], frames, box_tensors, box_categories # vid_names, frames were not there
+
+        if self.model not in coord_base_model:
+            frame_list = frame_list
+        else:
+            frame_list = coord_frame_list
+
+        frame_list = torch.Tensor(frame_list)
+
+        return self.vid_names[index], frame_list, frames, box_tensors, box_categories, word2vec_features # vid_names, frames were not there
 
 
     def __getitem__(self, index):
-        vid_name, frames, box_tensors, box_categories = self.sample_single(index)
+        vid_name, frame_list, frames, box_tensors, box_categories, word2vec_features = self.sample_single(index)
         
         global_img_tensors = self.transforms(frames) # [N, 3, H, W]
         global_img_tensors = global_img_tensors.permute(1, 0, 2, 3) # [3, N, H, W]
 
         ##############################################################################
         # Convert the frames to tensors, so we can display on tensorboard
-        worker = torchvision.transforms.Resize((224, 224), Image.BILINEAR)
-        frames = [worker(img) for img in frames]
+        # worker = torchvision.transforms.Resize((224, 224), Image.BILINEAR)
+        # frames = [worker(img) for img in frames]
 
-        worker = lambda x: F.to_tensor(x) * 255
-        img_group = [worker(img) for img in frames]
-        frames = torch.stack(img_group, 0)
+        # worker = lambda x: F.to_tensor(x) * 255
+        # img_group = [worker(img) for img in frames]
+        # frames = torch.stack(img_group, 0)
         ##############################################################################
 
-        return vid_name, frames, global_img_tensors, box_tensors, box_categories, self.classes_dict[self.labels[index]]
-
+        #return vid_name, frames, global_img_tensors, box_tensors, box_categories, word2vec_features, self.classes_dict[self.labels[index]]
+        return vid_name, frame_list, global_img_tensors, box_tensors, box_categories, word2vec_features, self.classes_dict[self.labels[index]]
 
 
     def __len__(self):
